@@ -1,4 +1,6 @@
-﻿function Get-NestedGroups {
+﻿$GroupImport = ($env:USERPROFILE + '\Documents\Groups.txt')
+
+function Get-NestedGroups {
 param 
 (
     [Parameter()]
@@ -10,24 +12,25 @@ param
     $domain = $GroupName -Split "," | ? {$_ -like "DC=*"}
     $domain = $domain -join "." -replace ("DC=", "")
     $domain = $domain -join "." -replace ("}", "")
-    
+   
     $groups = Get-ADGroupMember -Server $domain -Identity $GroupName
     $level++
     $groups | ForEach-Object {
         $global:ID++
         if($_.ObjectClass -eq 'user')
         {          
-            #$ID++
+            #$DisplayName = Get-ADUser -Identity $PSItem | Select-Object DisplayName
             $result = [pscustomobject]@{
             ID = $global:ID
             ParentID = $ParentID
-            Anzeigename = $_.SamAccountName
-            Name = $_.DistinguishedName
+            Name = $_.Name
+            DisplayName = (Get-ADUser $_  -Properties DisplayName).Displayname
+            SamAccountName = $_.SamAccountName
+            DistinguishedName = $_.DistinguishedName
             FromGroup = $GroupName
             objectClass = $_.objectClass
             Level = [int]$level
             }
-            #Write-Host -ForegroundColor Yellow $_.ID $_.Name
         }
         elseif($_.objectClass -eq 'group') 
         {         
@@ -35,44 +38,59 @@ param
             $result = [pscustomobject]@{
             ID = $global:ID
             ParentID = $ParentID
-            Anzeigename = $_.SamAccountName
-            Name = $_.DistinguishedName
+            Name = $_.Name
+            DisplayName = (Get-ADGroup $_  -Properties DisplayName).Displayname
+            SamAccountName = $_.SamAccountName
+            DistinguishedName = $_.DistinguishedName
             FromGroup = $GroupName
             objectClass = $_.objectClass
             Level = [int]$level
             }
-            Get-NestedGroups -Server $domain -Groupname $_.DistinguishedName -ParentID $ID
-            #Write-Host -ForegroundColor Yellow $_.Name             
+            Get-NestedGroups -Server $domain -Groupname $_.DistinguishedName -ParentID $ID       
         }  
         $result
     }
 }
 
-$GroupNames = Get-Content -Path ($env:USERPROFILE + '\Documents\Groups.txt')
-foreach($group in $Groupnames)
-{
-    $DNs = Get-ADGroup -Identity $group
-    $DNs = $DNs -join "." -replace ("@{distinguishedName=", "")
-    $DNs = $DNs -join "." -replace ("}", "")
-    Get-NestedGroups -GroupName $DNs -outfile $group | Export-Csv -Path ($env:USERPROFILE + '\Documents\' + $group + '_Groups.csv') -NoTypeInformation
-    $final = Import-Csv -Path ($env:USERPROFILE + '\Documents\' + $group + '_Groups.csv')
-    foreach ($f in $final){
-        if ($f.ParentID -eq 0){
-            Write-Host $f
-            if ($f.objectClass -eq 'group'){
-                $p = $f.ID
-            }
-            foreach($f2 in $f){
-                if ($f2.ParentID -eq $p)
-                {
-                    write-host "---" + $f
-                }            
-            }
+function buildTree {
+param (
+    [array]$objList,
+    [string]$prefix=''
+)
+    $objCount = $objList.count
+    for ($i = 0; $i -lt $objCount; $i++) {
+        $obj = $objList[$i]
+        $isLastOnLevel = (($i + 1) -eq $objCount)
+        $ChildObjects = ($list | where {$_.ParentID -eq $obj.id})
+        if ($isLastOnLevel) {
+            $char = '└'
+            $nextPrefix = $prefix + ' '
+        } else {
+            $char = '├'
+            $nextPrefix = $prefix + '|'
+        }
+        Write-Output ("{0}{1}{2}" -f @($prefix,$char,$obj.Name)) 
+        if ((([array]($ChildObjects)).count) -gt 0) {
+            buildTree -level ($level + 1) -objList ($ChildObjects) -prefix $nextPrefix 
         }
     }
-
-
-    $global:id = $null
-    $global:ParentID = $null
 }
 
+$GroupNames = Get-Content -Path $GroupImport | Sort-Object
+foreach($group in $GroupNames)
+{
+    $DetailedExport = ($env:USERPROFILE + '\Documents\' + $group + '_Groups.csv')
+    $ExportTree = ($env:USERPROFILE + '\Documents\' + $group + '_GroupTree.txt')
+
+    $DNs = Get-ADGroup -Identity $group | Sort-Object
+    $DNs = $DNs -join "." -replace ("@{distinguishedName=", "")
+    $DNs = $DNs -join "." -replace ("}", "")
+    
+    Get-NestedGroups -GroupName $DNs -outfile $group | Export-Csv -Path $DetailedExport -NoTypeInformation
+       
+    $list = Import-Csv -Path $DetailedExport
+    buildTree -objList ($list | where {$_.ParentID -eq 0}) | Out-File -FilePath $ExportTree
+}
+
+$global:id = $null
+$global:ParentID = $null
